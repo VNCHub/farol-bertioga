@@ -16,7 +16,8 @@ no futuro, disparar alertas por WhatsApp para um grupo pequeno de contatos.
 - [whatsapp-web.js](https://wwebjs.dev/) + `qrcode-terminal` para o canal de alertas.
 - [`@inquirer/prompts`](https://github.com/SBoudrias/Inquirer.js) para o menu interativo da CLI.
 - `dotenv` para configuração via `.env`.
-- Sem framework de testes, sem linter, sem build. Não há pipeline de CI.
+- [Vitest](https://vitest.dev/) para os testes unitários (`test/`). Sem linter, sem build.
+  CI no GitHub Actions (`.github/workflows/test.yml`) roda `npm test` a cada push/PR.
 
 ## Estrutura
 
@@ -31,6 +32,7 @@ no futuro, disparar alertas por WhatsApp para um grupo pequeno de contatos.
 | `.env` / `.env.example` | Credenciais e configuração. O `.env` real é ignorado pelo Git. |
 | `.wwebjs_auth/`, `.wwebjs_cache/` | Sessão persistida do WhatsApp Web. Não versionar. |
 | `docs/` | Documentação de arquitetura e configuração. |
+| `test/` | Testes unitários (Vitest). Cobrem `alerts.js`, `logger.js`, e as funções puras de `monitor.js` (`checkAvailability`, `sleep`) e `whatsapp-client.js` (`normalizeNumber`, `recipientsFromEnv`, `numberFromEnv`, `waitForServerAck`). Não sobem navegador nem rede. |
 
 ## Comandos
 
@@ -42,6 +44,9 @@ npm start              # CLI com menu interativo (node src/cli.js) — uso norma
 npm run login          # uma consulta única, Chromium visível (node src/monitor.js --once)
 npm run monitor        # consulta a cada 60s até Ctrl+C
 npm run whatsapp:test  # conecta o WhatsApp (QR Code) e manda mensagem de teste
+
+npm test               # testes unitários (Vitest, sem navegador)
+npm run test:watch     # Vitest em modo watch
 ```
 
 ## Convenções observadas no código

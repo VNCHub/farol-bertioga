@@ -21,9 +21,13 @@ Node.js >= 20 (desenvolvido no v24). Projeto em ESM puro (`"type": "module"`) �
   o fluxo do portal.
 - `npm run monitor` — loop de 60s.
 - `npm run whatsapp:test` — valida a conexão do WhatsApp.
+- `npm test` — testes unitários (Vitest). Não sobem navegador nem rede; rodam no CI.
 
-Não há testes automatizados. Toda mudança que toca o portal ou o WhatsApp precisa ser
-verificada rodando os scripts acima e conferindo a saída.
+Os testes cobrem a lógica pura (`alerts.js`, `logger.js` e funções isoladas de
+`monitor.js`/`whatsapp-client.js`). O fluxo real do portal e do WhatsApp **não** tem
+teste automatizado: toda mudança que toca o portal ou o WhatsApp ainda precisa ser
+verificada rodando os scripts acima e conferindo a saída. Ao adicionar lógica pura nova,
+acrescente um teste em `test/`.
 
 ## Estilo
 

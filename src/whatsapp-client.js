@@ -87,7 +87,7 @@ async function closeStrayPages(client) {
   );
 }
 
-function normalizeNumber(number) {
+export function normalizeNumber(number) {
   const normalized = String(number).replace(/\D/g, '');
   if (normalized.length < 10 || normalized.length > 15) {
     throw new Error(`Número de WhatsApp inválido: ${number}`);
@@ -100,7 +100,7 @@ const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 // whatsapp-web.js: ACK_ERROR=-1, ACK_PENDING=0, ACK_SERVER=1, ACK_DEVICE=2, ACK_READ=3.
 const ACK_SERVER = 1;
 
-function numberFromEnv(name, fallback) {
+export function numberFromEnv(name, fallback) {
   const raw = process.env[name];
   if (raw === undefined || raw === '') return fallback;
   const value = Number(raw);
@@ -113,7 +113,7 @@ function numberFromEnv(name, fallback) {
 // sendMessage() resolve quando a mensagem entra na fila da página do WhatsApp Web,
 // não quando o servidor a recebe. Sem esperar o ACK, destruir o cliente logo depois
 // (ex.: o finally do whatsapp-test.js) mata a mensagem antes de ela sair.
-function waitForServerAck(client, sentMessage, timeoutMs) {
+export function waitForServerAck(client, sentMessage, timeoutMs) {
   // Em algumas versões do whatsapp-web.js, sendMessage() resolve com undefined
   // mesmo tendo enfileirado a mensagem. Sem o id não dá para casar o ACK;
   // espera qualquer message_ack de saída chegar ao servidor dentro do timeout.
@@ -139,7 +139,7 @@ function waitForServerAck(client, sentMessage, timeoutMs) {
   });
 }
 
-function recipientsFromEnv() {
+export function recipientsFromEnv() {
   try {
     const recipients = JSON.parse(process.env.WHATSAPP_RECIPIENTS ?? '[]');
     if (!Array.isArray(recipients) || recipients.length === 0) {
