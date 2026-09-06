@@ -1,0 +1,21 @@
+{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "jq -r '.tool_input.command // empty' | grep -Ewq 'rm' && printf '%s' '{\"hookSpecificOutput\":{\"hookEventName\":\"PreToolUse\",\"permissionDecision\":\"ask\",\"permissionDecisionReason\":\"Comando rm detectado — confirme a remoção de arquivos antes de prosseguir.\"}}' || true",
+            "statusMessage": "Verificando comando rm..."
+          },
+          {
+            "type": "command",
+            "command": "jq -r '.tool_input.command // empty' | grep -Eq '\\bgit\\b.+\\b(commit|push)\\b|\\bgh\\b.+\\bpr\\b.+\\b(create|merge)\\b' && printf '%s' '{\"hookSpecificOutput\":{\"hookEventName\":\"PreToolUse\",\"permissionDecision\":\"ask\",\"permissionDecisionReason\":\"Este comando gera commits e/ou PR. Só confirme depois de verificar que a mensagem informa CLARAMENTE: (1) a QUANTIDADE de commits e (2) o MOTIVO de cada commit.\"}}' || true",
+            "statusMessage": "Verificando comando de commit/PR..."
+          }
+        ]
+      }
+    ]
+  }
+}
