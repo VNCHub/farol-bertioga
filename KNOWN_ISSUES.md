@@ -6,8 +6,8 @@
   `Nenhum mês aberto` (retorna `'unavailable'`); qualquer outra resposta vira
   `'unknown'` + `FALLBACK: RESPOSTA INESPERADA`. Falta observar o portal com vaga aberta
   para identificar o texto/elemento e fazer a função retornar `'available'`. O caminho
-  de alerta (`onAlert` → `alerts.js` → `sendWhatsAppAlert`) já está ligado; hoje só o
-  `'fallback'` chega a disparar.
+  de alerta (`onAlert` → `services/notifier.js` → `sendWhatsAppAlert`) já está ligado;
+  hoje só o `'fallback'` chega a disparar.
 - **O alerta de fallback é ambíguo por natureza.** `'unknown'` cobre tanto "o portal
   mudou / quebrou o seletor" quanto "pode ter vaga". O rate-limit de 10 min segura o
   volume, mas o texto pede confirmação manual.
@@ -21,24 +21,26 @@
   fluxo silenciosamente (cai em `FALLBACK`).
 - **Sessão do portal expira** e o código apenas reautentica no próximo ciclo; não há
   aviso de que ficou tempo sem monitorar de fato.
-- **`fillFirst` ainda aceita uma lista de seletores**, mas as chamadas passam sempre um
-  único seletor — sobra de uma versão anterior.
+- **`fillFirst` (em `src/adapters/portal.js`) ainda aceita uma lista de seletores**, mas
+  as chamadas passam sempre um único seletor — sobra de uma versão anterior.
 - **Cada alerta paga o custo de reconectar o WhatsApp** (~10–15s: sobe o Chromium,
   espera `ready`, envia, fecha). Aceitável para um evento raro; se os alertas ficarem
   frequentes, valeria um cliente vivo durante o monitoramento.
 - **Só um processo por vez pode falar com o WhatsApp.** `npm run whatsapp:test` e a CLI
   disputam o mesmo perfil `.wwebjs_auth/`. Rodar os dois **ao mesmo tempo**: o segundo
   mata o Chromium do primeiro (via `SingletonLock`) para assumir o perfil.
-- **`sanitizeBrowserProfile` supõe o layout de perfil do Chromium/Chrome** (`Default/`,
+- **`adapters/browser-profile.js` supõe o layout de perfil do Chromium/Chrome** (`Default/`,
   `SingletonLock` como symlink `host-pid`, `/proc/<pid>/cmdline`). É Linux-first; em
   outro SO a limpeza de lock vira no-op silencioso.
 
 ## Operação
 
-- **Cobertura de testes parcial.** `npm test` (Vitest) cobre `alerts.js`, `logger.js` e
-  as funções puras de `monitor.js` e `whatsapp-client.js`; CI roda no GitHub Actions. Ainda
-  **sem teste** para o loop de `runMonitor` (precisa de mock do Playwright), a CLI
-  (`cli.js`) e `sanitizeBrowserProfile`/`releaseProfileLock` (efeitos de sistema). Sem lint.
+- **Cobertura de testes parcial.** `npm test` (Vitest) cobre `config.js`, `logger.js`,
+  `services/notifier.js` e as funções puras de `adapters/portal.js` (`checkAvailability`),
+  `adapters/whatsapp-client.js` (`waitForServerAck`) e `services/monitor.js` (`sleep`);
+  CI roda no GitHub Actions. Ainda **sem teste** para o loop de `runMonitor` (precisa de
+  mock do Playwright), a CLI (`cli.js`) e `adapters/browser-profile.js` (efeitos de
+  sistema). Sem lint.
 - **Sem persistência de histórico.** Não dá para saber depois quando o monitor rodou
   ou o que viu, além do que ficou no terminal.
 - **Roda em processo único no terminal.** Não há supervisão (systemd, pm2, container);
@@ -48,5 +50,6 @@
 
 - Integrar os canais com deduplicação por janela de tempo.
 - Registrar execuções em arquivo de log rotacionado.
-- Parametrizar `PORTAL_URL`, `INTERVAL_MS` e textos via `.env`.
+- Parametrizar os textos do portal via `.env` (`PORTAL_URL`, `MONITOR_INTERVAL_MS` e
+  `BROWSER_RESTART_MS` já saem de `src/config.js`).
 - Empacotar para rodar como serviço.

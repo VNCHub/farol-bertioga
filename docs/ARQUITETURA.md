@@ -2,148 +2,226 @@
 
 ## Visão geral
 
+Três camadas, de baixo para cima:
+
+| Camada | Módulos | Responsabilidade |
+| --- | --- | --- |
+| **Base** | `config.js`, `logger.js` | Configuração e formato de log. Sem dependência interna. |
+| **Adapters** | `adapters/portal.js`, `adapters/whatsapp-client.js`, `adapters/browser-profile.js` | Falam uma lib/protocolo (Playwright, whatsapp-web.js, perfil do Chromium). Sem regra de negócio. |
+| **Services** | `services/monitor.js`, `services/notifier.js`, `services/whatsapp-session.js` | Regra e orquestração. Não sabem se foram chamados da CLI ou de um script. |
+| **Entrypoints** | `cli.js`, `whatsapp-test.js`, guard de `services/monitor.js` | Carregam o `.env`, montam o fluxo, tratam `Ctrl+C`. Só fiação. |
+
+```mermaid
+flowchart TD
+    ENV([".env"]) -->|"import 'dotenv/config'"| CONFIG["config.js"]
+
+    subgraph entry [entrypoints]
+      CLI["cli.js"]
+      SMOKE["whatsapp-test.js"]
+    end
+
+    subgraph svc [services]
+      MON["monitor.js<br/><i>runMonitor: loop + retries</i>"]
+      NOT["notifier.js<br/><i>dispatcher + envio + rate-limit</i>"]
+      SESS["whatsapp-session.js<br/><i>validateSession / logout</i>"]
+    end
+
+    subgraph adp [adapters]
+      PORTAL["portal.js<br/><i>Playwright: login / checkAvailability</i>"]
+      WAC["whatsapp-client.js<br/><i>whatsapp-web.js: connect / session</i>"]
+      BP["browser-profile.js<br/><i>sanitize do perfil Chromium</i>"]
+    end
+
+    CONFIG --> svc
+    CONFIG --> adp
+    CONFIG --> CLI
+
+    CLI --> MON
+    CLI --> NOT
+    CLI --> SESS
+    SMOKE --> NOT
+
+    MON --> PORTAL
+    MON -. "onAlert({ kind })" .-> NOT
+    NOT --> WAC
+    SESS --> WAC
+    WAC --> BP
+
+    PORTAL -->|Chromium| SESC(["Portal de reservas Sesc"])
+    WAC -->|whatsapp-web.js| WAWEB(["WhatsApp Web"]) --> DEST(["destinatários"])
 ```
-                         .env (LOGIN, SENHA, WHATSAPP_*)
-                           │
-                           ▼
-                     src/cli.js  ── menu interativo (@inquirer/prompts)
-                     ┌─────┴───────────────┐
-                     ▼                     ▼
-             src/monitor.js         src/whatsapp-client.js
-             runMonitor(...)        withWhatsApp: connect→ação→destroy
-             (Playwright/Chromium)  (whatsapp-web.js)
-                     │           ▲          │
-       onAvailable ──┼───────────┘          ▼
-                     ▼                WhatsApp Web ──► destinatários
-        Portal de reservas Sesc
+
+`runMonitor` (loop) usa `adapters/portal.js` e chama `onAlert({ kind })` em vaga
+(`'available'`) e em resposta inesperada (`'fallback'`); o dispatcher de `notifier.js`
+envia por WhatsApp com limite de 1 a cada 10 min. Hoje só o `'fallback'` dispara — a
+regra positiva de vaga ainda não existe (ver `KNOWN_ISSUES.md`). Todos os módulos logam
+pelo `report(status, details)` de `logger.js`.
+
+**Regra de dependência:** entrypoints → services → adapters → base. Um adapter nunca
+importa um service; um service nunca lê `process.env` (só `config.js` lê).
+
+## `config.js`
+
+Ponto único de configuração. **Nenhum outro módulo lê `process.env`.** Não carrega o
+`.env` — cada entrypoint faz `import 'dotenv/config'` no topo, antes dos imports que
+puxam `config.js`. Expõe:
+
+- Constantes do portal: `PORTAL_URL`, `MONITOR_INTERVAL_MS`, `BROWSER_RESTART_MS`,
+  `PORTAL_HEADED`.
+- `portalCredentials()` → `{ login, senha }`; lança se faltarem `LOGIN`/`SENHA`.
+- Constantes/paths do WhatsApp: `WHATSAPP_CLIENT_ID`, `WHATSAPP_AUTH_DIR`,
+  `WHATSAPP_CACHE_DIR`, `WHATSAPP_PROFILE_DIR`, `WHATSAPP_HEADLESS`.
+- Getters lidos a cada uso (para o teste sobrescrever): `whatsAppAckTimeoutMs()`,
+  `whatsAppSettleMs()`, `whatsAppSender()`.
+- `normalizeNumber(n)` e `whatsAppRecipients()` — parsing/validação de números.
+- `numberFromEnv(name, fallback)` — helper de env numérico não-negativo.
+
+## `logger.js`
+
+`timestamp()` (fuso `America/Sao_Paulo`, `sv-SE` → ISO-like) e
+`report(status, details)` — o formato de log usado por todos os módulos.
+
+## `adapters/portal.js`
+
+Driver do portal — a única parte acoplada ao HTML do site. Sem estado; recebe a `page`
+do Playwright e um `report` (default `logger.report`).
+
+- **`login(page, report)`**: lê `portalCredentials()`, navega até `PORTAL_URL`, espera o
+  iframe liberar o formulário (`waitForLoginContext`, até 90s varrendo `page.frames()`),
+  preenche `#logEmail` / `#logPassword`, clica em `#btnLogin`.
+- **`openNewStay(page, report)`**: recarrega a tela de reservas (o portal só libera os
+  recursos após reload), procura o link "Nova hospedagem". Se o portal voltar a pedir
+  login, lança `SESSÃO EXPIRADA:` — o loop de `monitor.js` quebra para reautenticar.
+- **`checkAvailability(page, report)`**: lê o texto de todos os frames. `Nenhum mês
+  aberto` → `VAGA NÃO DISPONÍVEL` (retorna `'unavailable'`). Qualquer outra resposta →
+  `FALLBACK: RESPOSTA INESPERADA` (retorna `'unknown'`; nunca afirma que há vaga).
+  Quando a regra positiva existir, deve retornar `'available'`.
+
+## `adapters/whatsapp-client.js`
+
+Adapter do WhatsApp Web. Sobe/derruba o cliente e valida a sessão; não conhece
+destinatários nem a semântica de "alerta".
+
+- **`createWhatsAppClient({ onStatus })`** → `{ client, ready }`. `ready` resolve quando
+  o evento `ready` chega **e** o número conectado bate com `WHATSAPP_SENDER`; rejeita em
+  `auth_failure` ou número divergente. Antes de subir o navegador, chama
+  `sanitizeBrowserProfile()`.
+- **`connectWhatsApp({ onStatus })`** → `client` já conectado (`initialize()` + `ready`);
+  destrói sozinho se o `ready` falhar. `closeStrayPages` fecha abas fora a do WhatsApp.
+- **`withWhatsApp(fn, { onStatus })`**: `connectWhatsApp` → `fn(client)` → `client.destroy()`
+  no `finally`. É o padrão de uso — a janela sobe só durante a operação.
+- **`waitForServerAck(client, sentMessage, timeoutMs)`**: espera o `message_ack` do
+  servidor (ACK ≥ SERVER). Sem isso, destruir o client logo após enviar mata a mensagem.
+- **`whatsAppSessionExists()`** → `boolean`. **`clearWhatsAppSessionFiles()`**: remove
+  `.wwebjs_auth/` e `.wwebjs_cache/`.
+
+## `adapters/browser-profile.js`
+
+Higienização do perfil Chromium que o `whatsapp-web.js` reaproveita entre execuções.
+Os dados de login do WhatsApp vivem em IndexedDB/Local Storage e **não** são tocados
+aqui — só o estado de restauração de abas e os locks.
+
+- **`sanitizeBrowserProfile(onStatus)`**: mata um Chromium órfão que ficou segurando o
+  lock (`SingletonLock`, confirmando pelo `/proc/<pid>/cmdline` que é o nosso), remove
+  `Singleton*` e os arquivos de restauração de abas, e marca o perfil como encerrado
+  corretamente. Assim cada execução começa com o navegador limpo.
+- **`closeStrayPages(client)`**: fecha qualquer aba que não seja a do WhatsApp Web.
+- **Linux-first**: supõe o layout de perfil do Chromium (`Default/`, `SingletonLock`
+  como symlink `host-pid`, `/proc`). Em outro SO, a limpeza de lock vira no-op.
+
+## `services/monitor.js`
+
+Só o **loop**. Exporta **`runMonitor({ once, signal, report, onAlert })`** e o utilitário
+`sleep(ms, signal)` (espera abortável). Execução direta (`node src/services/monitor.js
+[--once]`) fica atrás de um guard `import.meta.url === pathToFileURL(process.argv[1])`,
+que também liga `SIGINT`/`SIGTERM` a um `AbortController`.
+
+```mermaid
+flowchart TD
+    START([runMonitor]) --> CRED{"LOGIN/SENHA<br/>no .env?"}
+    CRED -->|não| ERR[["lança erro"]]
+    CRED -->|sim| OPEN["abre Chromium novo<br/>+ portal.login"]
+    OPEN --> STAY["portal.openNewStay"]
+    STAY --> CHECK["portal.checkAvailability"]
+    CHECK -->|unavailable| WAIT
+    CHECK -->|unknown| FB["onAlert({ kind: 'fallback' })"] --> WAIT
+    CHECK -->|available| AV["report VAGA DISPONÍVEL<br/>onAlert({ kind: 'available' })"] --> WAIT
+    WAIT["sleep(MONITOR_INTERVAL_MS)"] --> STAY
+
+    STAY -. "SESSÃO EXPIRADA:" .-> RELOGIN["quebra o loop interno"] --> OPEN
+    STAY -. "navegador caiu" .-> RESTART["sleep(BROWSER_RESTART_MS)"] --> OPEN
 ```
 
-A CLI é o entrypoint e orquestra os dois fluxos. `runMonitor` chama `onAlert({ kind })`
-em vaga (`'available'`) e em resposta inesperada (`'fallback'`); o despachante de
-`alerts.js` envia por WhatsApp com limite de 1 a cada 10 min. Hoje só o `'fallback'`
-dispara — a regra positiva de vaga ainda não existe (ver `KNOWN_ISSUES.md`).
-`src/monitor.js` e `src/whatsapp-test.js` continuam executáveis direto, sem a CLI.
-
-## `src/cli.js`
-
-Entrypoint (`npm start`). Menu com `@inquirer/prompts`:
-
-1. **Iniciar monitoramento** → submenu com/sem alertas.
-   - *Sem alertas*: `runMonitor({ signal, report })`.
-   - *Com alertas*: exige sessão de WhatsApp salva (`whatsAppSessionExists`); passa
-     `onAlert = dispatchAlert` (de `alerts.js`) — o WhatsApp conecta só quando há um
-     alerta a enviar e dentro do limite de 10 min; o Chromium fecha logo depois.
-   - Um `AbortController` liga o `Ctrl+C` ao `signal` do `runMonitor`: o loop encerra
-     limpo e volta ao menu, sem matar o processo.
-2. **Gerenciar notificações WhatsApp** → login/logout (alterna conforme a sessão
-   existente) e teste de envio. Cada ação abre o WhatsApp, faz o que precisa e fecha.
-
-O `dispatchAlert` é criado uma vez, no nível do módulo: o limite de 10 min sobrevive a
-parar e reiniciar o monitoramento pelo menu.
-
-`ExitPromptError` (Ctrl+C num prompt) é tratado como "voltar/sair", não como erro.
-
-### Ciclo de vida do WhatsApp
-
-Não há cliente de WhatsApp persistente: **toda operação é `connect → ação → destroy`**
-(`withWhatsApp`). Uma janela sobe só durante o envio e fecha em seguida. O que garante
-1 aba por vez e execuções independentes é o `sanitizeBrowserProfile()` que roda em todo
-`createWhatsAppClient` (ver abaixo) — não um cliente compartilhado.
-
-## `src/monitor.js`
-
-Exporta **`runMonitor({ once, signal, report, onAlert })`**. Sem efeito colateral na
-importação; execução direta (`node src/monitor.js [--once]`) fica atrás de um guard
-`import.meta.url === pathToFileURL(process.argv[1])`, que também liga `SIGINT`/`SIGTERM`
-a um `AbortController`.
-
-1. **Loop externo** (`while (!signal?.aborted)`): abre um Chromium novo, faz login e
-   entra no loop interno. Se o navegador cair, espera 5s e reabre. `once` desliga a
-   repetição; `signal` abortado encerra o loop de forma limpa.
-2. **`login(page, report)`**: navega até o portal, espera o iframe liberar o formulário
-   (`waitForLoginContext`, até 90s varrendo `page.frames()`), preenche `#logEmail` /
-   `#logPassword`, clica em `#btnLogin`.
-3. **Loop interno** (`do ... while (!once && !signal?.aborted)`): a cada 60s
-   (`INTERVAL_MS`, via `sleep` abortável) chama `openNewStay` + `checkAvailability`.
-4. **`openNewStay(page, report)`**: recarrega a tela de reservas (o portal só libera os
-   recursos após reload), procura o link "Nova hospedagem". Se o portal voltar a pedir
-   login, lança `SESSÃO EXPIRADA:` e o loop interno quebra para reautenticar.
-5. **`checkAvailability(page, report)`**: lê o texto de todos os frames. `Nenhum mês
-   aberto` → `VAGA NÃO DISPONÍVEL` (retorna `'unavailable'`). Qualquer outra resposta →
-   `FALLBACK: RESPOSTA INESPERADA` (retorna `'unknown'`; nunca afirma que há vaga).
-   Quando a regra positiva existir, deve retornar `'available'`.
-6. **Despacho de alerta**: `'available'` → `report('VAGA DISPONÍVEL')` + `onAlert({ kind:
-   'available' })`; `'unknown'` → `onAlert({ kind: 'fallback' })`. Falhas de processo
-   (`FALLBACK: FALHA NO PROCESSO`, `SESSÃO EXPIRADA`, `FALLBACK: CHROMIUM`) **não**
-   alertam — são infra e o loop já se recupera.
+1. **Loop externo** (`while (!signal?.aborted)`): valida `portalCredentials()`, abre um
+   Chromium novo (`PORTAL_HEADED`), chama `portal.login` e entra no loop interno. Se o
+   navegador cair, espera `BROWSER_RESTART_MS` e reabre. `once` desliga a repetição;
+   `signal` abortado encerra o loop de forma limpa.
+2. **Loop interno**: a cada `MONITOR_INTERVAL_MS` (via `sleep` abortável) chama
+   `portal.openNewStay` + `portal.checkAvailability`.
+3. **Despacho de alerta**: `'available'`/`'unknown'` → `onAlert({ kind })`. Falhas de
+   processo (`FALLBACK: FALHA NO PROCESSO`, `SESSÃO EXPIRADA`, `FALLBACK: CHROMIUM`)
+   **não** alertam — são infra e o loop já se recupera.
 
 ### Decisões de projeto
 
 - **Conservadorismo na detecção.** Só o caso negativo é conhecido. Toda incerteza vira
-  `FALLBACK` para não acordar ninguém à toa. A regra positiva deve ser adicionada só
-  quando o elemento/texto de vaga estiver identificado com segurança.
+  `FALLBACK` para não acordar ninguém à toa.
 - **Esperas por deadline, não por seletor único.** O portal é lento e usa iframes
   aninhados; o código faz polling com `isVisible().catch(() => false)` e prazos amplos.
 - **Reinício resiliente.** Falhas de navegador reabrem o Chromium; falhas de sessão
   refazem o login; erros de página só são logados.
 
-## `src/alerts.js`
+## `services/notifier.js`
 
-**`createAlertDispatcher({ cooldownMs, now, onStatus, send })`** → a função `onAlert`.
+Serviço de notificação por WhatsApp: transforma um evento (ou um pedido de teste) numa
+mensagem entregue.
 
-- Rate-limit: **1 alerta a cada `cooldownMs` (padrão 10 min)**, somando `'available'` e
-  `'fallback'`. Alertas na janela de silêncio são só logados (`ALERTA — <kind>:
-  suprimido…`).
-- A janela começa na **tentativa**, não no sucesso: se o envio falhar (WhatsApp fora),
-  não fica reconectando a cada ciclo de 60s — espera o cooldown.
-- `send` padrão = `withWhatsApp(c => sendWhatsAppAlert(c, msg))`. `now` e `send` são
-  injetáveis; o teste em `docs`/scripts cobre o limite sem abrir navegador.
-- Mensagens em `ALERT_MESSAGES` (`available` / `fallback`).
+- **`sendWhatsAppAlert(client, message, { onStatus })`**: dado um client já conectado,
+  envia para todos de `whatsAppRecipients()` (`<numero>@c.us`), aguarda o ACK de cada um
+  (`whatsAppAckTimeoutMs()`, timeout só emite `AVISO`) e pausa `whatsAppSettleMs()` antes
+  de retornar a lista de destinatários.
+- **`sendTestMessage({ onStatus })`**: `withWhatsApp` → `sendWhatsAppAlert(TEST_MESSAGE)`.
+  É o que a CLI ("Testar envio") e `whatsapp-test.js` chamam — **um só caminho**.
+- **`createAlertDispatcher({ cooldownMs, now, onStatus, send })`** → a função `onAlert`:
+  - Rate-limit: **1 alerta a cada `cooldownMs` (padrão 10 min)**, somando `'available'` e
+    `'fallback'`. Alertas na janela de silêncio são só logados.
+  - A janela começa na **tentativa**, não no sucesso: se o envio falhar (WhatsApp fora),
+    não fica reconectando a cada ciclo — espera o cooldown.
+  - `now` e `send` são injetáveis; `test/notifier.test.js` cobre o limite sem navegador.
+- Textos em `ALERT_MESSAGES` (`available` / `fallback`) e `TEST_MESSAGE`.
 
-## `src/whatsapp-client.js`
+## `services/whatsapp-session.js`
 
-Módulo reutilizável, sem efeitos colaterais na importação.
+Casos de uso da sessão (o menu "Gerenciar notificações"):
 
-- **`createWhatsAppClient({ onStatus })`** → `{ client, ready }`.
-  - `client`: instância `whatsapp-web.js` com `LocalAuth` (clientId `sesc-bertioga-bot`,
-    sessão em `.wwebjs_auth/`).
-  - `ready`: `Promise` que resolve quando o evento `ready` chega **e** o número
-    conectado bate com `WHATSAPP_SENDER`; rejeita em `auth_failure` ou número divergente.
-  - Eventos tratados: `qr` (imprime o QR Code no terminal), `authenticated`, `ready`.
-  - Antes de subir o navegador, roda `sanitizeBrowserProfile()`: mata um Chromium órfão
-    que tenha ficado segurando o lock do perfil (`SingletonLock`, confirmando pelo
-    `/proc/<pid>/cmdline` que é o nosso), remove `Singleton*` e os arquivos de
-    restauração de abas (`Sessions/`, `Current/Last Session`, `Current/Last Tabs`) e
-    marca o perfil como encerrado corretamente. Assim cada execução começa com o
-    navegador limpo — **só a sessão do WhatsApp** (IndexedDB/Local Storage) persiste.
-- **`connectWhatsApp({ onStatus })`** → `client` já conectado (`initialize()` + `ready`);
-  destrói sozinho se o `ready` falhar. Ao ficar pronto, `closeStrayPages` fecha qualquer
-  aba que não seja a do WhatsApp Web. O chamador cuida do `client.destroy()`.
-- **`withWhatsApp(fn, { onStatus })`**: `connectWhatsApp` → `fn(client)` → `client.destroy()`
-  no `finally`. É o padrão de uso — a janela sobe só durante a operação. Retorna o que
-  `fn` retornar.
-- **`whatsAppSessionExists()`** → `boolean`; há `.wwebjs_auth/session-sesc-bertioga-bot/`?
-- **`clearWhatsAppSessionFiles()`**: remove `.wwebjs_auth/` e `.wwebjs_cache/`.
-- **`logoutWhatsApp({ onStatus })`**: conecta, chama `client.logout()` (desvincula o
-  aparelho no celular) e no `finally` destrói o cliente + `clearWhatsAppSessionFiles()`.
-  Falha no desvínculo remoto → só a sessão local é apagada.
-- **`sendWhatsAppAlert(client, message, { onStatus })`**: lê `WHATSAPP_RECIPIENTS`
-  (array JSON), normaliza cada número (`\D` removido, 10–15 dígitos) e envia para
-  `<numero>@c.us`. Depois de cada `sendMessage`, aguarda o ACK do servidor via evento
-  `message_ack` (até `WHATSAPP_ACK_TIMEOUT_MS`, padrão 30s; timeout só emite `AVISO`).
-  Ao final, pausa `WHATSAPP_SETTLE_MS` (padrão 3s) antes de retornar, para o Chromium
-  sincronizar antes de o chamador encerrar o cliente. Retorna a lista de destinatários.
+- **`validateSession({ onStatus })`**: `withWhatsApp(() => {})` — conecta, espera o
+  `ready` (mostra o QR Code se não houver sessão), fecha. Parear número novo ou revalidar.
+- **`logout({ onStatus })`**: conecta, `client.logout()` (desvincula no celular), destrói
+  e `clearWhatsAppSessionFiles()`. Falha no desvínculo remoto → só a sessão local é apagada.
 
-## `src/whatsapp-test.js`
+## `cli.js`
 
-Script de fumaça. `withWhatsApp` → `sendWhatsAppAlert` (mensagem fixa). Equivale à opção
-"Testar envio" da CLI, para quem prefere linha de comando. **Não rode junto com a CLI** —
-o segundo processo mata o Chromium do primeiro (via `SingletonLock`) para assumir o perfil.
+Entrypoint (`npm start`). Menu com `@inquirer/prompts`; traduz escolha de menu → chamada
+de serviço.
 
-## `src/logger.js`
+1. **Iniciar monitoramento** → submenu com/sem alertas.
+   - *Sem alertas*: `runMonitor({ signal, report })`.
+   - *Com alertas*: exige sessão salva (`whatsAppSessionExists`); passa
+     `onAlert = dispatchAlert` (de `notifier.js`).
+   - Um `AbortController` liga o `Ctrl+C` ao `signal` do `runMonitor`: o loop encerra
+     limpo e volta ao menu, sem matar o processo.
+2. **Gerenciar notificações WhatsApp** → `validateSession` / `logout` (alterna conforme a
+   sessão) e `sendTestMessage`.
 
-`timestamp()` (fuso `America/Sao_Paulo`, `sv-SE` → ISO-like) e
-`report(status, details)` — o formato de log usado por todos os módulos.
+O `dispatchAlert` é criado uma vez, no nível do módulo: o limite de 10 min sobrevive a
+parar e reiniciar o monitoramento pelo menu. `ExitPromptError` (Ctrl+C num prompt) é
+tratado como "voltar/sair", não como erro.
+
+## `whatsapp-test.js`
+
+Script de fumaça: `import 'dotenv/config'` + `sendTestMessage()`. **Não rode junto com a
+CLI** — o segundo processo mata o Chromium do primeiro (via `SingletonLock`) para assumir
+o perfil.
 
 ## Persistência
 
@@ -153,16 +231,34 @@ o segundo processo mata o Chromium do primeiro (via `SingletonLock`) para assumi
 | `.wwebjs_cache/` | HTML do WhatsApp Web em cache | Não (`.gitignore`) |
 
 Do perfil Chromium, **só a autenticação do WhatsApp** é tratada como estado durável;
-abas, janelas e locks são zerados a cada execução (`sanitizeBrowserProfile`). Não há
+abas, janelas e locks são zerados a cada execução (`adapters/browser-profile.js`). Não há
 banco de dados nem estado em disco do lado do monitor do portal — cada ciclo é
 independente.
+
+## Testes
+
+`npm test` (Vitest, sem navegador nem rede). Um arquivo por módulo com lógica pura:
+
+| Arquivo | Cobre |
+| --- | --- |
+| `test/config.test.js` | `numberFromEnv`, `normalizeNumber`, `whatsAppRecipients` |
+| `test/logger.test.js` | `timestamp`, `report` |
+| `test/portal.test.js` | `checkAvailability` (com `page` falso) |
+| `test/monitor.test.js` | `sleep` (espera abortável) |
+| `test/notifier.test.js` | `createAlertDispatcher` (rate-limit, `now`/`send` injetados) |
+| `test/whatsapp-client.test.js` | `waitForServerAck` |
+
+Ainda **sem teste** para o loop de `runMonitor`, a CLI e os efeitos de sistema de
+`browser-profile.js` (ver `KNOWN_ISSUES.md`).
 
 ## Pontos de extensão
 
 - **Regra positiva de vaga**: fazer `checkAvailability` retornar `'available'` a partir
-  de um seletor/texto específico, com testes manuais documentados. O resto do caminho
-  (`onAlert` → `alerts.js` → `sendWhatsAppAlert`) já está ligado e com rate-limit.
-- **Rate-limit por tipo**: hoje o limite de 10 min é único. Poderia ser separado
-  (vaga imediata, fallback mais espaçado) se o fallback ficar barulhento.
-- **Observabilidade**: hoje é só `console.log`. Um arquivo de log rotacionado ou um
-  webhook ajudaria a auditar execuções longas.
+  de um seletor/texto específico. O resto do caminho (`onAlert` → `notifier.js`) já está
+  ligado e com rate-limit.
+- **Outro canal de alerta** (Telegram, e-mail): `createAlertDispatcher` já aceita `send`
+  injetável; um novo adapter + um `send` alternativo bastam. O rate-limit não muda.
+- **Rate-limit por tipo**: hoje o limite de 10 min é único. Poderia separar vaga
+  (imediata) de fallback (mais espaçado) se o fallback ficar barulhento.
+- **Observabilidade**: hoje é só `console.log`. Um arquivo de log rotacionado ajudaria a
+  auditar execuções longas.

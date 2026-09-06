@@ -3,7 +3,7 @@ import {
   ALERT_COOLDOWN_MS,
   ALERT_MESSAGES,
   createAlertDispatcher,
-} from '../src/alerts.js';
+} from '../src/services/notifier.js';
 
 // createAlertDispatcher usa report() (logger) internamente, que escreve no stdout.
 beforeEach(() => {

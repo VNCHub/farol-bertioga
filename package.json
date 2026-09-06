@@ -8,8 +8,8 @@
   },
   "scripts": {
     "start": "node src/cli.js",
-    "login": "node src/monitor.js --once",
-    "monitor": "node src/monitor.js",
+    "login": "node src/services/monitor.js --once",
+    "monitor": "node src/services/monitor.js",
     "whatsapp:test": "node src/whatsapp-test.js",
     "test": "vitest run",
     "test:watch": "vitest"

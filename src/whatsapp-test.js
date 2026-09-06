@@ -1,20 +1,13 @@
+// Script de fumaça: sobe o WhatsApp, envia a mensagem de teste e fecha.
+// Equivale à opção "Testar envio" da CLI, para quem prefere linha de comando.
 import 'dotenv/config';
 import { report } from './logger.js';
-import { sendWhatsAppAlert, withWhatsApp } from './whatsapp-client.js';
-
-const onStatus = (message) => report('WHATSAPP', message);
+import { sendTestMessage } from './services/notifier.js';
 
 report('WHATSAPP', 'iniciando cliente de teste');
 
 try {
-  const recipients = await withWhatsApp(
-    (client) => sendWhatsAppAlert(
-      client,
-      'Teste do monitor Sesc Bertioga: o cliente de alertas do WhatsApp está conectado.',
-      { onStatus },
-    ),
-    { onStatus },
-  );
+  const recipients = await sendTestMessage();
   report('WHATSAPP', `teste enviado — ${recipients.join(', ')}`);
 } catch (error) {
   report('WHATSAPP', `FALLBACK: ${error.message}`);
