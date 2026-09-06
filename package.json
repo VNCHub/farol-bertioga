@@ -1,10 +1,10 @@
 {
-  "name": "sesc-bertioga-bot",
+  "name": "farol-bertioga",
   "version": "0.1.0",
   "private": true,
   "type": "module",
   "bin": {
-    "sesc-bertioga-bot": "src/cli.js"
+    "farol-bertioga": "src/cli.js"
   },
   "scripts": {
     "start": "node src/cli.js",
