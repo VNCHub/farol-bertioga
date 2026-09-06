@@ -1,7 +1,10 @@
 # Configuração
 
-Toda a configuração vem de variáveis de ambiente, carregadas de `.env` via
-`import 'dotenv/config'`. Comece copiando o modelo:
+Toda a configuração vem de variáveis de ambiente. Os entrypoints (`src/cli.js`,
+`src/services/monitor.js`, `src/whatsapp-test.js`) carregam o `.env` com
+`import 'dotenv/config'` no topo; a leitura e a validação centralizam em
+**`src/config.js`**, de onde os demais módulos importam (nenhum outro toca em
+`process.env`). Comece copiando o modelo:
 
 ```bash
 cp .env.example .env
@@ -9,15 +12,18 @@ cp .env.example .env
 
 ## Variáveis
 
-### Portal de reservas (`src/monitor.js`)
+### Portal de reservas (`src/adapters/portal.js`, `src/services/monitor.js`)
 
 | Variável | Obrigatória | Padrão | Descrição |
 | --- | --- | --- | --- |
 | `LOGIN` | sim | — | E-mail/usuário do portal `centrodeferias.sescsp.org.br`. Sem ela o monitor lança erro na inicialização. |
 | `SENHA` | sim | — | Senha do portal. |
 | `HEADLESS` | não | `false` | Qualquer valor diferente de `true` abre o Chromium visível com `slowMo` de 250ms. `true` roda oculto e sem `slowMo`. |
+| `PORTAL_URL` | não | `https://centrodeferias.sescsp.org.br/reservas/` | URL da tela de reservas. |
+| `MONITOR_INTERVAL_MS` | não | `60000` | Intervalo, em ms, entre consultas no loop interno. |
+| `BROWSER_RESTART_MS` | não | `5000` | Espera, em ms, antes de reabrir o Chromium depois de uma queda. |
 
-### WhatsApp (`src/whatsapp-client.js`, `src/whatsapp-test.js`)
+### WhatsApp (`src/adapters/whatsapp-client.js`, `src/services/notifier.js`)
 
 | Variável | Obrigatória | Padrão | Descrição |
 | --- | --- | --- | --- |
