@@ -1,18 +1,13 @@
 #!/usr/bin/env node
 import 'dotenv/config';
 import { select, confirm } from '@inquirer/prompts';
-import { createAlertDispatcher } from './alerts.js';
 import { report } from './logger.js';
-import { runMonitor } from './monitor.js';
-import {
-  logoutWhatsApp,
-  sendWhatsAppAlert,
-  whatsAppSessionExists,
-  withWhatsApp,
-} from './whatsapp-client.js';
+import { createAlertDispatcher, sendTestMessage } from './services/notifier.js';
+import { runMonitor } from './services/monitor.js';
+import { logout as logoutWhatsApp, validateSession } from './services/whatsapp-session.js';
+import { whatsAppSessionExists } from './adapters/whatsapp-client.js';
 
 const waStatus = (message) => report('WHATSAPP', message);
-const TEST_MESSAGE = 'Teste do monitor Sesc Bertioga: o canal de alertas do WhatsApp está funcionando.';
 
 // Um só despachante para toda a vida da CLI: o limite de 10 min sobrevive a
 // parar e reiniciar o monitoramento pelo menu.
@@ -94,7 +89,7 @@ async function whatsAppLogin() {
   }
 
   try {
-    await withWhatsApp(() => {}, { onStatus: waStatus });
+    await validateSession({ onStatus: waStatus });
     report('WHATSAPP', 'sessão validada e salva em .wwebjs_auth/. Janela fechada.');
   } catch (error) {
     report('WHATSAPP', `FALLBACK: ${error.message}`);
@@ -122,10 +117,7 @@ async function whatsAppTestSend() {
     return;
   }
   try {
-    const recipients = await withWhatsApp(
-      (client) => sendWhatsAppAlert(client, TEST_MESSAGE, { onStatus: waStatus }),
-      { onStatus: waStatus },
-    );
+    const recipients = await sendTestMessage({ onStatus: waStatus });
     report('WHATSAPP', `teste enviado — ${recipients.join(', ')}. Janela fechada.`);
   } catch (error) {
     report('WHATSAPP', `FALLBACK: ${error.message}`);
