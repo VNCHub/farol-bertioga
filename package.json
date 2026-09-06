@@ -1,0 +1,22 @@
+{
+  "name": "sesc-bertioga-bot",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "bin": {
+    "sesc-bertioga-bot": "src/cli.js"
+  },
+  "scripts": {
+    "start": "node src/cli.js",
+    "login": "node src/monitor.js --once",
+    "monitor": "node src/monitor.js",
+    "whatsapp:test": "node src/whatsapp-test.js"
+  },
+  "dependencies": {
+    "@inquirer/prompts": "^8.7.1",
+    "dotenv": "^16.6.1",
+    "playwright": "^1.55.0",
+    "qrcode-terminal": "^0.12.0",
+    "whatsapp-web.js": "^1.34.7"
+  }
+}
