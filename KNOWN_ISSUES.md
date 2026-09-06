@@ -35,13 +35,14 @@
 
 ## Operação
 
-- **Sem testes, lint ou CI.** Toda verificação é manual.
+- **Cobertura de testes parcial.** `npm test` (Vitest) cobre `alerts.js`, `logger.js` e
+  as funções puras de `monitor.js` e `whatsapp-client.js`; CI roda no GitHub Actions. Ainda
+  **sem teste** para o loop de `runMonitor` (precisa de mock do Playwright), a CLI
+  (`cli.js`) e `sanitizeBrowserProfile`/`releaseProfileLock` (efeitos de sistema). Sem lint.
 - **Sem persistência de histórico.** Não dá para saber depois quando o monitor rodou
   ou o que viu, além do que ficou no terminal.
 - **Roda em processo único no terminal.** Não há supervisão (systemd, pm2, container);
   se o processo morrer, ninguém reinicia.
-- **Não é um repositório Git ainda.** Rode `git init` antes de versionar e confirme que
-  o `.env` está ignorado.
 
 ## Ideias de evolução
 

@@ -9,7 +9,7 @@ const INTERVAL_MS = 60_000;
 const BROWSER_RESTART_MS = 5_000;
 
 // Espera abortável: resolve no prazo OU imediatamente se o signal for abortado.
-function sleep(ms, signal) {
+export function sleep(ms, signal) {
   return new Promise((resolve) => {
     if (signal?.aborted) return resolve();
     const onAbort = () => {
@@ -96,7 +96,7 @@ async function openNewStay(page, report) {
 // 'unknown' para qualquer outra resposta (nunca afirma que há vaga por suposição).
 // TODO: quando o texto/elemento positivo de vaga estiver identificado com segurança,
 //       retornar 'available' aqui — runMonitor já dispara o alerta nesse caso.
-async function checkAvailability(page, report) {
+export async function checkAvailability(page, report = defaultReport) {
   const text = await Promise.all(page.frames().map((frame) => frame.locator('body').innerText().catch(() => '')));
   if (text.join('\n').toLocaleLowerCase('pt-BR').includes(NO_AVAILABILITY_TEXT.toLocaleLowerCase('pt-BR'))) {
     report('VAGA NÃO DISPONÍVEL');
