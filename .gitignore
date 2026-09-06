@@ -1,0 +1,18 @@
+# Segredos e sessão — NUNCA versionar
+.env
+.env.*
+!.env.example
+.wwebjs_auth/
+.wwebjs_cache/
+
+# Dependências e artefatos
+node_modules/
+playwright-report/
+test-results/
+
+# Config local do Claude Code (o settings.json compartilhado é versionado)
+.claude/settings.local.json
+
+# Sistema operacional / editores
+.DS_Store
+*.log
