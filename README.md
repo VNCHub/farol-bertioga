@@ -8,6 +8,40 @@ de contatos.
 > ⚠️ Projeto pessoal, sem vínculo com o Sesc. Use com as suas próprias credenciais e
 > respeite os termos de uso do portal.
 
+## Demonstração
+
+### 1. Navegação pela CLI
+
+`npm start` abre o menu interativo. As setas percorrem as opções e o Enter
+confirma. É o ponto de entrada que roteia cada escolha para o serviço
+correspondente (monitoramento ou gerenciamento de notificações).
+
+![Navegação pela CLI](docs/media/01-cli-navegacao.gif)
+
+### 2. Notificação de teste (WhatsApp)
+
+Pelo menu "Gerenciar notificações WhatsApp" é possível enviar uma mensagem de
+teste. O app conecta ao WhatsApp Web (`connect → ação → destroy`), dispara a
+mensagem para os destinatários configurados e encerra a sessão do navegador.
+
+![Envio de notificação de teste](docs/media/02-notificacao-teste.gif)
+
+### 3. Login com QR Code do WhatsApp
+
+Na primeira conexão o WhatsApp Web exibe o QR Code no Chromium. Após escanear
+com o celular, a autenticação fica salva em `.wwebjs_auth/` e as próximas
+execuções não pedem o QR novamente.
+
+![Login do WhatsApp por QR Code](docs/media/03-login-whatsapp.gif)
+
+### 4. Monitoramento em execução
+
+O monitor abre o portal do Sesc, faz login e consulta a disponibilidade em
+loop. Cada iteração imprime uma linha com timestamp e status em CAIXA ALTA;
+uma resposta inesperada dispara alerta por WhatsApp (no máximo 1 a cada 10 min).
+
+![Monitoramento em execução](docs/media/04-monitoramento.gif)
+
 ## Requisitos
 
 - Node.js >= 20 (testado no v24)
