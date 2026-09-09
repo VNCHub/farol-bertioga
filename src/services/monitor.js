@@ -36,9 +36,11 @@ export function sleep(ms, signal) {
  * @param {boolean}     [options.once]    Uma única consulta e retorna.
  * @param {AbortSignal} [options.signal]  Aborta o loop de forma limpa (sem matar o processo).
  * @param {Function}    [options.report]  `(status, details?) => void` para a saída.
- * @param {Function}    [options.onAlert] Assíncrona, `({ kind, details }) => void`. Chamada com
- *                                        `kind: 'available'` quando uma vaga é confirmada e
+ * @param {Function}    [options.onAlert] Assíncrona, `({ kind, months, details }) => void`. Chamada com
+ *                                        `kind: 'available'` (+ `months`: rótulos com vaga) quando o
+ *                                        portal abre o passo "Períodos" com `Disponíveis (N ≥ 1)`, e
  *                                        `kind: 'fallback'` quando o portal dá resposta inesperada.
+ *                                        Mês listado sem período (`'sem-periodo'`) só é logado, não alerta.
  *                                        Passe só quando quiser alertas; o rate-limit é do chamador.
  */
 export async function runMonitor({
@@ -63,14 +65,14 @@ export async function runMonitor({
       do {
         try {
           await openNewStay(page, report);
-          const availability = await checkAvailability(page, report);
-          if (availability === 'available') {
-            report('VAGA DISPONÍVEL');
-            await onAlert?.({ kind: 'available' });
-          } else if (availability === 'unknown') {
+          const { status, availableMonths } = await checkAvailability(page, report);
+          if (status === 'available') {
+            await onAlert?.({ kind: 'available', months: availableMonths });
+          } else if (status === 'unknown') {
             // checkAvailability já logou o FALLBACK: RESPOSTA INESPERADA.
             await onAlert?.({ kind: 'fallback', details: 'resposta inesperada do portal' });
           }
+          // 'sem-periodo' e 'unavailable': checkAvailability já logou; nada a alertar.
         } catch (error) {
           const message = error.message ?? String(error);
           report('FALLBACK: FALHA NO PROCESSO', message);

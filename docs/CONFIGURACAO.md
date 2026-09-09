@@ -33,6 +33,13 @@ cp .env.example .env
 | `WHATSAPP_ACK_TIMEOUT_MS` | não | `30000` | Tempo máximo, em ms, que `sendWhatsAppAlert` aguarda a confirmação de recebimento do servidor (ACK) de cada mensagem. Ao estourar, registra `AVISO` e segue. |
 | `WHATSAPP_SETTLE_MS` | não | `3000` | Pausa, em ms, após enviar todas as mensagens e antes de devolver o controle, para o Chromium terminar de sincronizar com o WhatsApp Web antes de o cliente ser encerrado. |
 
+### Meses de interesse (não é `.env`)
+
+Ao iniciar o monitoramento **com alertas** pelo menu (`npm start`), um `checkbox`
+lista os meses do atual até 3 à frente. Os marcados são os únicos que disparam alerta
+de vaga por WhatsApp; nenhum marcado = todos. A escolha vale só para a execução atual
+(não persiste) e não afeta o alerta de resposta inesperada.
+
 ### Formato dos números
 
 - Apenas dígitos: `5511999998888` (DDI 55 + DDD 11 + número).

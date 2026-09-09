@@ -2,23 +2,33 @@
 
 ## Bloqueadores de funcionalidade
 
-- **Não existe regra positiva de "há vaga".** `checkAvailability` só reconhece o texto
-  `Nenhum mês aberto` (retorna `'unavailable'`); qualquer outra resposta vira
-  `'unknown'` + `FALLBACK: RESPOSTA INESPERADA`. Falta observar o portal com vaga aberta
-  para identificar o texto/elemento e fazer a função retornar `'available'`. O caminho
-  de alerta (`onAlert` → `services/notifier.js` → `sendWhatsAppAlert`) já está ligado;
-  hoje só o `'fallback'` chega a disparar.
-- **O alerta de fallback é ambíguo por natureza.** `'unknown'` cobre tanto "o portal
-  mudou / quebrou o seletor" quanto "pode ter vaga". O rate-limit de 10 min segura o
-  volume, mas o texto pede confirmação manual.
+- **Regra positiva de vaga é indireta.** `checkAvailability` agora reconhece três
+  cenários: `Nenhum mês aberto` → `'unavailable'`; mês listado em "Meses disponíveis"
+  cujo passo "Períodos" mostra `Disponíveis (0)` / `Não há períodos disponíveis` →
+  `'sem-periodo'` (só loga `MÊS SEM PERÍODO`, não alerta); mês com `Disponíveis (N ≥ 1)`
+  → `'available'` (alerta WhatsApp nomeando o mês). Ainda **não** foi possível observar
+  o portal com uma vaga real (`N ≥ 1`) — a leitura da contagem é a melhor hipótese e
+  pode precisar de ajuste quando isso acontecer; `parsePeriodCount` é onde mexer.
+- **O alerta de fallback continua ambíguo.** `'unknown'` cobre "o portal mudou / quebrou
+  o seletor" e "meses listados mas sem contagem legível". O rate-limit de 10 min segura
+  o volume, mas o texto pede confirmação manual.
+- **`checkAvailability` clica mês a mês.** Para ler a contagem de períodos ele seleciona
+  cada pill e espera o passo "Períodos" assentar. O custo por ciclo cresce com o número
+  de meses abertos (hoje é sempre 0 ou 1).
 - **Rate-limit não persiste entre execuções da CLI.** É estado em memória do processo;
-  reabrir a CLI zera a janela de 10 min.
+  reabrir a CLI zera a janela de 10 min. Os meses de interesse escolhidos no menu
+  também não persistem.
 
 ## Robustez
 
 - **Seletores acoplados ao HTML do portal** (`#logEmail`, `#logPassword`, `#btnLogin`,
-  texto "Nova hospedagem", "Nenhum mês aberto"). Qualquer mudança no portal quebra o
+  `button[ng-click^="setPeriodo"]`, textos "Nova hospedagem", "Nenhum mês aberto",
+  "Disponíveis (N)", "Não há períodos disponíveis"). Qualquer mudança no portal quebra o
   fluxo silenciosamente (cai em `FALLBACK`).
+- **Login do portal é sensível a timing.** O formulário é AngularJS; se o clique no
+  `#btnLogin` acontecer cedo demais, o portal faz um submit nativo (GET com a senha na
+  URL) sem autenticar. `login()` pausa 1s antes de clicar e confere se o formulário
+  sumiu, refazendo até 3× — mas continua sendo um ponto frágil.
 - **Sessão do portal expira** e o código apenas reautentica no próximo ciclo; não há
   aviso de que ficou tempo sem monitorar de fato.
 - **`fillFirst` (em `src/adapters/portal.js`) ainda aceita uma lista de seletores**, mas
@@ -36,7 +46,8 @@
 ## Operação
 
 - **Cobertura de testes parcial.** `npm test` (Vitest) cobre `config.js`, `logger.js`,
-  `services/notifier.js` e as funções puras de `adapters/portal.js` (`checkAvailability`),
+  `services/notifier.js` e as funções puras de `adapters/portal.js`
+  (`classifyAvailability`, `parsePeriodCount`),
   `adapters/whatsapp-client.js` (`waitForServerAck`) e `services/monitor.js` (`sleep`);
   CI roda no GitHub Actions. Ainda **sem teste** para o loop de `runMonitor` (precisa de
   mock do Playwright), a CLI (`cli.js`) e `adapters/browser-profile.js` (efeitos de

@@ -78,13 +78,15 @@ npm start   # CLI com menu interativo — a forma normal de usar
 O menu cobre:
 
 - **Iniciar monitoramento** — com ou sem alertas por WhatsApp (Ctrl+C volta ao menu).
-  No modo com alertas, uma mensagem é enviada quando o portal mostra uma vaga **ou**
-  responde de forma inesperada, no máximo **1 a cada 10 minutos**.
+  No modo com alertas, um *checkbox* deixa escolher os **meses de interesse** (do mês
+  atual até 3 à frente; nenhum marcado = todos). Uma mensagem é enviada quando o portal
+  abre uma vaga real num mês de interesse **ou** responde de forma inesperada, no máximo
+  **1 a cada 10 minutos**.
 - **Gerenciar notificações WhatsApp** — login (QR Code) / logout e teste de envio.
 
-> A detecção positiva de vaga ainda não está definida (`checkAvailability` nunca afirma
-> "há vaga"). Na prática, hoje o alerta que dispara é o de **resposta inesperada** —
-> um lembrete para conferir o portal manualmente. Ver `KNOWN_ISSUES.md`.
+> A vaga é reconhecida de forma indireta: o mês precisa aparecer em "Meses disponíveis"
+> **e** abrir o passo "Períodos" com `Disponíveis (N ≥ 1)`. Mês listado com
+> `Disponíveis (0)` é só logado (`MÊS SEM PERÍODO`), sem WhatsApp. Ver `KNOWN_ISSUES.md`.
 
 ### Scripts diretos (sem menu)
 
@@ -99,9 +101,12 @@ npm run whatsapp:test  # conecta o WhatsApp e envia uma mensagem de teste
 O monitor imprime linhas com timestamp (fuso de São Paulo) e um status em CAIXA ALTA:
 
 - `VAGA NÃO DISPONÍVEL` — o portal mostrou `Nenhum mês aberto`.
+- `MÊS SEM PERÍODO` — o mês aparece em "Meses disponíveis", mas o passo "Períodos" está
+  em `Disponíveis (0)`. Não há vaga; **não** dispara WhatsApp.
+- `VAGA DISPONÍVEL` — um mês abriu o passo "Períodos" com `Disponíveis (N ≥ 1)`. Dispara
+  o alerta por WhatsApp (se o mês estiver entre os de interesse).
 - `FALLBACK: ...` — qualquer resposta inesperada ou falha controlada. **Não é** um
-  sinal de vaga; existe para evitar falso positivo enquanto a regra de identificação
-  positiva de vaga não estiver definida.
+  sinal de vaga; existe para evitar falso positivo.
 
 ## Documentação
 

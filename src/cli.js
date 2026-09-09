@@ -1,7 +1,8 @@
 #!/usr/bin/env node
 import 'dotenv/config';
-import { select, confirm } from '@inquirer/prompts';
+import { select, checkbox, confirm } from '@inquirer/prompts';
 import { report } from './logger.js';
+import { upcomingMonthLabels } from './config.js';
 import { createAlertDispatcher, sendTestMessage } from './services/notifier.js';
 import { runMonitor } from './services/monitor.js';
 import { logout as logoutWhatsApp, validateSession } from './services/whatsapp-session.js';
@@ -9,9 +10,16 @@ import { whatsAppSessionExists } from './adapters/whatsapp-client.js';
 
 const waStatus = (message) => report('WHATSAPP', message);
 
+// Meses de interesse escolhidos no menu (rótulos "Setembro / 2026"); vazio = todos.
+// O despachante lê pela referência, então trocar a seleção não zera o cooldown.
+let interestedMonths = [];
+
 // Um só despachante para toda a vida da CLI: o limite de 10 min sobrevive a
 // parar e reiniciar o monitoramento pelo menu.
-const dispatchAlert = createAlertDispatcher({ onStatus: waStatus });
+const dispatchAlert = createAlertDispatcher({
+  onStatus: waStatus,
+  interestedMonths: () => interestedMonths,
+});
 
 // O select do @inquirer lança ExitPromptError no Ctrl+C; tratamos como "voltar".
 const CANCELLED = Symbol('cancelled');
@@ -50,7 +58,12 @@ async function runMonitoringSession(withAlerts) {
   process.on('SIGINT', onSigint);
 
   report('MONITORAMENTO', withAlerts ? 'iniciado (com alertas)' : 'iniciado (sem alertas)');
-  if (withAlerts) report('MONITORAMENTO', 'alerta em vaga ou fallback; no máximo 1 a cada 10 min; WhatsApp conecta só no envio.');
+  if (withAlerts) {
+    report('MONITORAMENTO', 'alerta em vaga ou fallback; no máximo 1 a cada 10 min; WhatsApp conecta só no envio.');
+    report('MONITORAMENTO', interestedMonths.length
+      ? `alerta de vaga só para: ${interestedMonths.join(', ')}`
+      : 'alerta de vaga para qualquer mês aberto');
+  }
   console.log('  Ctrl+C volta ao menu.\n');
 
   try {
@@ -74,6 +87,16 @@ async function monitoringMenu() {
   }));
 
   if (choice === CANCELLED || choice === 'back') return;
+
+  if (choice === 'alerts') {
+    const meses = await ask(checkbox({
+      message: 'Meses de interesse para o alerta (espaço marca, enter confirma; nenhum = todos)',
+      choices: upcomingMonthLabels(3).map((mes) => ({ name: mes, value: mes })),
+    }));
+    if (meses === CANCELLED) return;
+    interestedMonths = meses;
+  }
+
   await runMonitoringSession(choice === 'alerts');
 }
 
