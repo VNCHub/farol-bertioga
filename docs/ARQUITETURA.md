@@ -51,11 +51,13 @@ flowchart TD
     WAC -->|whatsapp-web.js| WAWEB(["WhatsApp Web"]) --> DEST(["destinatários"])
 ```
 
-`runMonitor` (loop) usa `adapters/portal.js` e chama `onAlert({ kind })` em vaga
-(`'available'`) e em resposta inesperada (`'fallback'`); o dispatcher de `notifier.js`
-envia por WhatsApp com limite de 1 a cada 10 min. Hoje só o `'fallback'` dispara — a
-regra positiva de vaga ainda não existe (ver `KNOWN_ISSUES.md`). Todos os módulos logam
-pelo `report(status, details)` de `logger.js`.
+`runMonitor` (loop) usa `adapters/portal.js` e chama `onAlert({ kind, months })` em vaga
+(`'available'`) e `onAlert({ kind: 'fallback' })` em resposta inesperada; o dispatcher de
+`notifier.js` envia por WhatsApp com limite de 1 a cada 10 min e filtra pelos meses de
+interesse escolhidos no menu. Mês listado sem período (`'sem-periodo'`) só é logado. A
+regra positiva de vaga (`Disponíveis (N ≥ 1)`) existe mas ainda não foi vista com vaga
+real (ver `KNOWN_ISSUES.md`). Todos os módulos logam pelo `report(status, details)` de
+`logger.js`.
 
 **Regra de dependência:** entrypoints → services → adapters → base. Um adapter nunca
 importa um service; um service nunca lê `process.env` (só `config.js` lê).
@@ -75,6 +77,9 @@ puxam `config.js`. Expõe:
   `whatsAppSettleMs()`, `whatsAppSender()`.
 - `normalizeNumber(n)` e `whatsAppRecipients()` — parsing/validação de números.
 - `numberFromEnv(name, fallback)` — helper de env numérico não-negativo.
+- Meses do portal (puros): `PORTAL_MONTHS`, `monthLabel(ano, i)`,
+  `upcomingMonthLabels(ahead, now)` (opções do menu), `normalizeMonthLabel(l)`
+  (comparação) e `canonicalMonthLabel(raw)` (`"SETEMBRO / 2026"` → `"Setembro / 2026"`).
 
 ## `logger.js`
 
@@ -88,14 +93,23 @@ do Playwright e um `report` (default `logger.report`).
 
 - **`login(page, report)`**: lê `portalCredentials()`, navega até `PORTAL_URL`, espera o
   iframe liberar o formulário (`waitForLoginContext`, até 90s varrendo `page.frames()`),
-  preenche `#logEmail` / `#logPassword`, clica em `#btnLogin`.
+  preenche `#logEmail` / `#logPassword`, **pausa 1s** (sem isso o AngularJS do portal
+  dispara o submit nativo — GET com a senha na URL — sem autenticar) e clica em
+  `#btnLogin`. Confere se o formulário sumiu; se continuar, refaz o login (até 3×).
 - **`openNewStay(page, report)`**: recarrega a tela de reservas (o portal só libera os
-  recursos após reload), procura o link "Nova hospedagem". Se o portal voltar a pedir
-  login, lança `SESSÃO EXPIRADA:` — o loop de `monitor.js` quebra para reautenticar.
-- **`checkAvailability(page, report)`**: lê o texto de todos os frames. `Nenhum mês
-  aberto` → `VAGA NÃO DISPONÍVEL` (retorna `'unavailable'`). Qualquer outra resposta →
-  `FALLBACK: RESPOSTA INESPERADA` (retorna `'unknown'`; nunca afirma que há vaga).
-  Quando a regra positiva existir, deve retornar `'available'`.
+  recursos após reload) e procura "Nova hospedagem", tentando até 4× (~30s) para dar
+  tempo ao cookie de SSO. Se nunca aparecer, lança `SESSÃO EXPIRADA:` — o loop de
+  `monitor.js` quebra para reautenticar.
+- **`checkAvailability(page, report)`** → `{ status, availableMonths, listedMonths }`.
+  `Nenhum mês aberto` → `VAGA NÃO DISPONÍVEL` / `'unavailable'`. Senão acha o frame com
+  "Meses disponíveis", e para cada pill de mês (`button[ng-click^="setPeriodo"]`) clica
+  e lê o passo "Períodos": `Disponíveis (N)` via `parsePeriodCount`. `N ≥ 1` →
+  `VAGA DISPONÍVEL` / `'available'`; só `Disponíveis (0)` → `MÊS SEM PERÍODO` /
+  `'sem-periodo'`; contagem ilegível ou tela desconhecida → `FALLBACK: RESPOSTA
+  INESPERADA` / `'unknown'`.
+- **`classifyAvailability({ pageText, months })`** e **`parsePeriodCount(panelText)`** —
+  o núcleo puro (sem Playwright), coberto por `test/portal.test.js`. A parte de navegador
+  de `checkAvailability` não tem teste unitário (como `runMonitor`).
 
 ## `adapters/whatsapp-client.js`
 
@@ -142,10 +156,11 @@ flowchart TD
     CRED -->|não| ERR[["lança erro"]]
     CRED -->|sim| OPEN["abre Chromium novo<br/>+ portal.login"]
     OPEN --> STAY["portal.openNewStay"]
-    STAY --> CHECK["portal.checkAvailability"]
+    STAY --> CHECK["portal.checkAvailability<br/><i>clica mês a mês, lê Disponíveis (N)</i>"]
     CHECK -->|unavailable| WAIT
+    CHECK -->|"sem-periodo<br/>(Disponíveis 0)"| SP["report MÊS SEM PERÍODO<br/><i>não alerta</i>"] --> WAIT
     CHECK -->|unknown| FB["onAlert({ kind: 'fallback' })"] --> WAIT
-    CHECK -->|available| AV["report VAGA DISPONÍVEL<br/>onAlert({ kind: 'available' })"] --> WAIT
+    CHECK -->|"available<br/>(Disponíveis N ≥ 1)"| AV["onAlert({ kind: 'available', months })"] --> WAIT
     WAIT["sleep(MONITOR_INTERVAL_MS)"] --> STAY
 
     STAY -. "SESSÃO EXPIRADA:" .-> RELOGIN["quebra o loop interno"] --> OPEN
@@ -158,9 +173,11 @@ flowchart TD
    `signal` abortado encerra o loop de forma limpa.
 2. **Loop interno**: a cada `MONITOR_INTERVAL_MS` (via `sleep` abortável) chama
    `portal.openNewStay` + `portal.checkAvailability`.
-3. **Despacho de alerta**: `'available'`/`'unknown'` → `onAlert({ kind })`. Falhas de
-   processo (`FALLBACK: FALHA NO PROCESSO`, `SESSÃO EXPIRADA`, `FALLBACK: CHROMIUM`)
-   **não** alertam — são infra e o loop já se recupera.
+3. **Despacho de alerta**: `'available'` → `onAlert({ kind: 'available', months })`;
+   `'unknown'` → `onAlert({ kind: 'fallback' })`. `'sem-periodo'` e `'unavailable'` não
+   alertam (o adapter já logou). Falhas de processo (`FALLBACK: FALHA NO PROCESSO`,
+   `SESSÃO EXPIRADA`, `FALLBACK: CHROMIUM`) **não** alertam — são infra e o loop já se
+   recupera.
 
 ### Decisões de projeto
 
@@ -182,13 +199,18 @@ mensagem entregue.
   de retornar a lista de destinatários.
 - **`sendTestMessage({ onStatus })`**: `withWhatsApp` → `sendWhatsAppAlert(TEST_MESSAGE)`.
   É o que a CLI ("Testar envio") e `whatsapp-test.js` chamam — **um só caminho**.
-- **`createAlertDispatcher({ cooldownMs, now, onStatus, send })`** → a função `onAlert`:
+- **`createAlertDispatcher({ cooldownMs, interestedMonths, now, onStatus, send })`** → a função `onAlert`:
   - Rate-limit: **1 alerta a cada `cooldownMs` (padrão 10 min)**, somando `'available'` e
     `'fallback'`. Alertas na janela de silêncio são só logados.
+  - Filtro de meses: `interestedMonths` (array **ou** `() => string[]`, resolvido a cada
+    alerta). Vaga cujo mês não está na lista → `{ sent: false, reason: 'not-interested' }`
+    **sem** consumir o cooldown. Lista vazia = qualquer mês. Não afeta `'fallback'`.
   - A janela começa na **tentativa**, não no sucesso: se o envio falhar (WhatsApp fora),
     não fica reconectando a cada ciclo — espera o cooldown.
-  - `now` e `send` são injetáveis; `test/notifier.test.js` cobre o limite sem navegador.
-- Textos em `ALERT_MESSAGES` (`available` / `fallback`) e `TEST_MESSAGE`.
+  - `now` e `send` são injetáveis; `test/notifier.test.js` cobre limite e filtro sem navegador.
+- Textos em `ALERT_MESSAGES` — **funções**: `available(months)` nomeia o(s) mês(es) e
+  inclui `PORTAL_URL`; `fallback()` pede conferência manual. `alertMessage(kind, months)`
+  monta o texto (cai em `fallback` para kind desconhecido). `TEST_MESSAGE` é fixo.
 
 ## `services/whatsapp-session.js`
 
@@ -206,16 +228,19 @@ de serviço.
 
 1. **Iniciar monitoramento** → submenu com/sem alertas.
    - *Sem alertas*: `runMonitor({ signal, report })`.
-   - *Com alertas*: exige sessão salva (`whatsAppSessionExists`); passa
+   - *Com alertas*: exige sessão salva (`whatsAppSessionExists`); antes de iniciar, um
+     `checkbox` (`upcomingMonthLabels(3)`) define os meses de interesse → atualiza a
+     variável `interestedMonths` que o `dispatchAlert` lê por referência. Passa
      `onAlert = dispatchAlert` (de `notifier.js`).
    - Um `AbortController` liga o `Ctrl+C` ao `signal` do `runMonitor`: o loop encerra
      limpo e volta ao menu, sem matar o processo.
 2. **Gerenciar notificações WhatsApp** → `validateSession` / `logout` (alterna conforme a
    sessão) e `sendTestMessage`.
 
-O `dispatchAlert` é criado uma vez, no nível do módulo: o limite de 10 min sobrevive a
-parar e reiniciar o monitoramento pelo menu. `ExitPromptError` (Ctrl+C num prompt) é
-tratado como "voltar/sair", não como erro.
+O `dispatchAlert` é criado uma vez, no nível do módulo, com
+`interestedMonths: () => interestedMonths`: o limite de 10 min e a leitura da seleção
+sobrevivem a parar e reiniciar o monitoramento pelo menu. `ExitPromptError` (Ctrl+C num
+prompt) é tratado como "voltar/sair", não como erro.
 
 ## `whatsapp-test.js`
 
@@ -241,11 +266,11 @@ independente.
 
 | Arquivo | Cobre |
 | --- | --- |
-| `test/config.test.js` | `numberFromEnv`, `normalizeNumber`, `whatsAppRecipients` |
+| `test/config.test.js` | `numberFromEnv`, `normalizeNumber`, `whatsAppRecipients`, helpers de mês (`monthLabel`, `upcomingMonthLabels`, `normalizeMonthLabel`, `canonicalMonthLabel`) |
 | `test/logger.test.js` | `timestamp`, `report` |
-| `test/portal.test.js` | `checkAvailability` (com `page` falso) |
+| `test/portal.test.js` | `classifyAvailability`, `parsePeriodCount` (núcleo puro) |
 | `test/monitor.test.js` | `sleep` (espera abortável) |
-| `test/notifier.test.js` | `createAlertDispatcher` (rate-limit, `now`/`send` injetados) |
+| `test/notifier.test.js` | `createAlertDispatcher` (rate-limit, filtro de meses, `now`/`send` injetados) |
 | `test/whatsapp-client.test.js` | `waitForServerAck` |
 
 Ainda **sem teste** para o loop de `runMonitor`, a CLI e os efeitos de sistema de
@@ -253,9 +278,10 @@ Ainda **sem teste** para o loop de `runMonitor`, a CLI e os efeitos de sistema d
 
 ## Pontos de extensão
 
-- **Regra positiva de vaga**: fazer `checkAvailability` retornar `'available'` a partir
-  de um seletor/texto específico. O resto do caminho (`onAlert` → `notifier.js`) já está
-  ligado e com rate-limit.
+- **Ajuste da regra de vaga**: `parsePeriodCount` lê `Disponíveis (N)` / "não há
+  períodos". Quando o portal aparecer com vaga real (`N ≥ 1` + lista de períodos), vale
+  conferir o texto e, se preciso, endurecer a leitura. `classifyAvailability` decide o
+  status a partir das contagens.
 - **Outro canal de alerta** (Telegram, e-mail): `createAlertDispatcher` já aceita `send`
   injetável; um novo adapter + um `send` alternativo bastam. O rate-limit não muda.
 - **Rate-limit por tipo**: hoje o limite de 10 min é único. Poderia separar vaga

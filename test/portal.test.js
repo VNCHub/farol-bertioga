@@ -1,54 +1,77 @@
-import { afterEach, describe, expect, it, vi } from 'vitest';
-import { checkAvailability } from '../src/adapters/portal.js';
+import { describe, expect, it } from 'vitest';
+import { classifyAvailability, parsePeriodCount } from '../src/adapters/portal.js';
 
-afterEach(() => {
-  vi.restoreAllMocks();
+// `checkAvailability` fala com o Playwright (clica pill a pill e lê o passo
+// "Períodos") e não é coberto aqui — assim como `runMonitor`. O que dá para
+// testar sem navegador é o núcleo puro: extrair a contagem de um texto e
+// classificar a disponibilidade a partir dela.
+
+describe('parsePeriodCount', () => {
+  it('lê "Disponíveis (N)"', () => {
+    expect(parsePeriodCount('1. Períodos  DISPONÍVEIS (0)  Ordenar por data')).toBe(0);
+    expect(parsePeriodCount('Disponíveis (3)')).toBe(3);
+  });
+
+  it('trata as mensagens de "sem período" como 0', () => {
+    expect(parsePeriodCount('Não há períodos disponíveis.')).toBe(0);
+    expect(parsePeriodCount('Não existem períodos disponíveis.')).toBe(0);
+  });
+
+  it('retorna null quando não há contador reconhecível', () => {
+    expect(parsePeriodCount('Selecione o período da sua hospedagem')).toBeNull();
+    expect(parsePeriodCount('')).toBeNull();
+  });
 });
 
-// page falso: cada item de `frameTexts` vira um frame cujo body.innerText()
-// resolve com a string — ou rejeita, se for um Error.
-function fakePage(frameTexts) {
-  return {
-    frames: () => frameTexts.map((value) => ({
-      locator: () => ({
-        innerText: () => (value instanceof Error ? Promise.reject(value) : Promise.resolve(value)),
-      }),
-    })),
-  };
-}
-
-describe('checkAvailability', () => {
-  it('retorna "unavailable" quando algum frame traz "Nenhum mês aberto"', async () => {
-    const report = vi.fn();
-    const page = fakePage(['bla bla', 'Nenhum mês aberto no momento']);
-
-    expect(await checkAvailability(page, report)).toBe('unavailable');
-    expect(report).toHaveBeenCalledWith('VAGA NÃO DISPONÍVEL');
+describe('classifyAvailability', () => {
+  it('"Nenhum mês aberto" → unavailable (independe de caixa/acentuação)', () => {
+    expect(classifyAvailability({ pageText: '... NENHUM MÊS ABERTO ...' })).toEqual({
+      status: 'unavailable',
+      availableMonths: [],
+      listedMonths: [],
+    });
   });
 
-  it('reconhece a frase independentemente de caixa/acentuação do portal', async () => {
-    const page = fakePage(['... NENHUM MÊS ABERTO ...']);
-    expect(await checkAvailability(page, vi.fn())).toBe('unavailable');
+  it('mês com período > 0 → available, com o rótulo', () => {
+    const result = classifyAvailability({
+      pageText: 'Meses disponíveis',
+      months: [{ label: 'Setembro / 2026', count: 2 }],
+    });
+    expect(result.status).toBe('available');
+    expect(result.availableMonths).toEqual(['Setembro / 2026']);
   });
 
-  it('retorna "unknown" (nunca afirma vaga por suposição) para qualquer outra resposta', async () => {
-    const report = vi.fn();
-    const page = fakePage(['Selecione o período da sua hospedagem']);
-
-    expect(await checkAvailability(page, report)).toBe('unknown');
-    expect(report).toHaveBeenCalledWith(
-      'FALLBACK: RESPOSTA INESPERADA',
-      expect.any(String),
-    );
+  it('mês listado com 0 períodos → sem-periodo (só log, sem alerta)', () => {
+    const result = classifyAvailability({
+      pageText: 'Meses disponíveis',
+      months: [{ label: 'Setembro / 2026', count: 0 }],
+    });
+    expect(result.status).toBe('sem-periodo');
+    expect(result.listedMonths).toEqual(['Setembro / 2026']);
+    expect(result.availableMonths).toEqual([]);
   });
 
-  it('tolera frames cujo innerText() rejeita', async () => {
-    const page = fakePage([new Error('frame detached'), 'Nenhum mês aberto']);
-    expect(await checkAvailability(page, vi.fn())).toBe('unavailable');
+  it('contagem ilegível (null) → unknown (nunca afirma vaga por suposição)', () => {
+    expect(classifyAvailability({
+      pageText: 'Meses disponíveis',
+      months: [{ label: 'Setembro / 2026', count: null }],
+    }).status).toBe('unknown');
   });
 
-  it('retorna "unknown" quando todos os frames falham', async () => {
-    const page = fakePage([new Error('a'), new Error('b')]);
-    expect(await checkAvailability(page, vi.fn())).toBe('unknown');
+  it('misto: um mês com vaga e outro sem → available + listedMonths preenchido', () => {
+    const result = classifyAvailability({
+      pageText: 'Meses disponíveis',
+      months: [
+        { label: 'Setembro / 2026', count: 0 },
+        { label: 'Outubro / 2026', count: 1 },
+      ],
+    });
+    expect(result.status).toBe('available');
+    expect(result.availableMonths).toEqual(['Outubro / 2026']);
+    expect(result.listedMonths).toEqual(['Setembro / 2026']);
+  });
+
+  it('sem meses e sem "Nenhum mês aberto" → unknown', () => {
+    expect(classifyAvailability({ pageText: 'Selecione o período' }).status).toBe('unknown');
   });
 });

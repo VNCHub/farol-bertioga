@@ -7,16 +7,31 @@
 // - `createAlertDispatcher`: a função `onAlert` do `runMonitor`, com rate-limit.
 
 import { report } from '../logger.js';
-import { whatsAppAckTimeoutMs, whatsAppRecipients, whatsAppSettleMs } from '../config.js';
+import {
+  PORTAL_URL,
+  normalizeMonthLabel,
+  whatsAppAckTimeoutMs,
+  whatsAppRecipients,
+  whatsAppSettleMs,
+} from '../config.js';
 import { waitForServerAck, withWhatsApp } from '../adapters/whatsapp-client.js';
 
 // No máximo um alerta a cada 10 minutos, somando vaga e fallback.
 export const ALERT_COOLDOWN_MS = 10 * 60_000;
 
 export const ALERT_MESSAGES = {
-  available: 'Monitor Sesc Bertioga: VAGA possivelmente DISPONÍVEL — confira o portal de reservas agora.',
-  fallback: 'Monitor Sesc Bertioga: o portal respondeu de forma inesperada (possível mudança no site ou vaga). Confira manualmente.',
+  available: (months = []) =>
+    `Monitor Sesc Bertioga: VAGA aberta para ${months.length ? months.join(', ') : 'um ou mais meses'}! `
+    + `Faça a inscrição agora no portal: ${PORTAL_URL}`,
+  fallback: () =>
+    'Monitor Sesc Bertioga: o portal respondeu de forma inesperada (possível mudança no site). '
+    + `Confira manualmente: ${PORTAL_URL}`,
 };
+
+/** Monta o texto do alerta para um `kind` (cai em `fallback` para kind desconhecido). */
+export function alertMessage(kind, months = []) {
+  return (ALERT_MESSAGES[kind] ?? ALERT_MESSAGES.fallback)(months);
+}
 
 export const TEST_MESSAGE =
   'Teste do monitor Sesc Bertioga: o canal de alertas do WhatsApp está funcionando.';
@@ -60,22 +75,43 @@ export function sendTestMessage({ onStatus = waStatus } = {}) {
  * de silêncio; alertas nesse intervalo são só logados. `now`/`send` são injetáveis
  * para teste.
  *
- * @param {object}   [deps]
- * @param {number}   [deps.cooldownMs]
- * @param {Function} [deps.now]       `() => number` (ms).
- * @param {Function} [deps.onStatus]  log de status do WhatsApp.
- * @param {Function} [deps.send]      `(message) => Promise<string[]>` — envio real.
- * @returns {(alert: { kind: 'available' | 'fallback', details?: string }) => Promise<object>}
+ * @param {object}            [deps]
+ * @param {number}            [deps.cooldownMs]
+ * @param {string[]|Function} [deps.interestedMonths]  Rótulos ("Setembro / 2026") ou
+ *        `() => string[]` — resolvido a cada alerta. Só alerta de vaga (`kind: 'available'`)
+ *        cujo mês esteja na lista; lista vazia = qualquer mês. Não afeta `fallback`.
+ * @param {Function}          [deps.now]       `() => number` (ms).
+ * @param {Function}          [deps.onStatus]  log de status do WhatsApp.
+ * @param {Function}          [deps.send]      `(message) => Promise<string[]>` — envio real.
+ * @returns {(alert: { kind: 'available' | 'fallback', months?: string[], details?: string }) => Promise<object>}
  */
 export function createAlertDispatcher({
   cooldownMs = ALERT_COOLDOWN_MS,
+  interestedMonths = [],
   now = () => Date.now(),
   onStatus = waStatus,
   send = (message) => withWhatsApp((client) => sendWhatsAppAlert(client, message, { onStatus }), { onStatus }),
 } = {}) {
+  const resolveInterested = typeof interestedMonths === 'function'
+    ? interestedMonths
+    : () => interestedMonths;
   let lastAlertAt = -Infinity;
 
-  return async function dispatch({ kind }) {
+  return async function dispatch({ kind, months = [] }) {
+    let alertMonths = months;
+
+    // Filtro de meses de interesse — só para vaga com meses conhecidos.
+    if (kind === 'available') {
+      const wanted = (resolveInterested() ?? []).map(normalizeMonthLabel);
+      if (wanted.length > 0 && months.length > 0) {
+        alertMonths = months.filter((m) => wanted.includes(normalizeMonthLabel(m)));
+        if (alertMonths.length === 0) {
+          report('ALERTA', `available: ${months.join(', ')} fora dos meses de interesse — não enviado`);
+          return { sent: false, reason: 'not-interested' };
+        }
+      }
+    }
+
     const ts = now();
     const elapsed = ts - lastAlertAt;
     if (elapsed < cooldownMs) {
@@ -87,8 +123,9 @@ export function createAlertDispatcher({
     lastAlertAt = ts; // conta a tentativa mesmo se o envio falhar, para não insistir
 
     try {
-      const recipients = await send(ALERT_MESSAGES[kind] ?? ALERT_MESSAGES.fallback);
-      report('ALERTA', `${kind}: enviado — ${(recipients ?? []).join(', ')}`);
+      const recipients = await send(alertMessage(kind, alertMonths));
+      const alvo = alertMonths.length ? ` (${alertMonths.join(', ')})` : '';
+      report('ALERTA', `${kind}${alvo}: enviado — ${(recipients ?? []).join(', ')}`);
       return { sent: true, recipients };
     } catch (error) {
       report('ALERTA', `${kind}: FALLBACK — ${error.message}`);

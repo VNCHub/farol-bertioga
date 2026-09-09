@@ -47,6 +47,51 @@ export function portalCredentials() {
   return { login, senha };
 }
 
+// --- Meses do portal ---------------------------------------------------
+// O portal rotula os meses abertos como "Setembro / 2026". A CLI oferece os
+// meses de interesse (do atual até +3) e o adapter compara o que achou no
+// portal com essa lista — sempre pelo rótulo normalizado.
+
+export const PORTAL_MONTHS = [
+  'Janeiro', 'Fevereiro', 'Março', 'Abril', 'Maio', 'Junho',
+  'Julho', 'Agosto', 'Setembro', 'Outubro', 'Novembro', 'Dezembro',
+];
+
+/** Rótulo "Mês / AAAA" como o portal exibe. `monthIndex` base 0 (0 = Janeiro). */
+export function monthLabel(year, monthIndex) {
+  return `${PORTAL_MONTHS[((monthIndex % 12) + 12) % 12]} / ${year}`;
+}
+
+/** Rótulos do mês atual até `ahead` meses à frente, inclusive (padrão: 4 rótulos). */
+export function upcomingMonthLabels(ahead = 3, now = new Date()) {
+  return Array.from({ length: ahead + 1 }, (_, i) => {
+    const d = new Date(now.getFullYear(), now.getMonth() + i, 1);
+    return monthLabel(d.getFullYear(), d.getMonth());
+  });
+}
+
+/** Normaliza um rótulo de mês para comparação: sem acento, minúsculo, espaços colapsados. */
+export function normalizeMonthLabel(label) {
+  return String(label)
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase()
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+/**
+ * "SETEMBRO / 2026" | "setembro/2026" → "Setembro / 2026" (forma canônica do portal).
+ * Retorna `null` quando o texto não casa com "<mês> / <ano>".
+ */
+export function canonicalMonthLabel(raw) {
+  const match = String(raw).match(/([A-Za-zÀ-ÿ]+)\s*\/\s*(\d{4})/);
+  if (!match) return null;
+  const wanted = normalizeMonthLabel(match[1]);
+  const index = PORTAL_MONTHS.findIndex((name) => normalizeMonthLabel(name) === wanted);
+  return index < 0 ? null : monthLabel(match[2], index);
+}
+
 // --- WhatsApp -----------------------------------------------------------
 
 export const WHATSAPP_CLIENT_ID = 'sesc-bertioga-bot';

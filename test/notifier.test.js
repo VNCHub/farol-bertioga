@@ -29,11 +29,21 @@ describe('createAlertDispatcher', () => {
   it('envia o primeiro alerta com a mensagem do kind e retorna os destinatários', async () => {
     const { dispatch, send } = setup();
 
-    const result = await dispatch({ kind: 'available' });
+    const result = await dispatch({ kind: 'available', months: ['Setembro / 2026'] });
 
     expect(send).toHaveBeenCalledOnce();
-    expect(send).toHaveBeenCalledWith(ALERT_MESSAGES.available);
+    expect(send).toHaveBeenCalledWith(ALERT_MESSAGES.available(['Setembro / 2026']));
     expect(result).toEqual({ sent: true, recipients: ['5511999990000'] });
+  });
+
+  it('a mensagem de vaga nomeia os meses e traz o link do portal', async () => {
+    const { dispatch, send } = setup();
+
+    await dispatch({ kind: 'available', months: ['Setembro / 2026'] });
+
+    const [message] = send.mock.calls[0];
+    expect(message).toContain('Setembro / 2026');
+    expect(message).toMatch(/https?:\/\//);
   });
 
   it('usa a mensagem de fallback para kind "fallback"', async () => {
@@ -41,7 +51,7 @@ describe('createAlertDispatcher', () => {
 
     await dispatch({ kind: 'fallback' });
 
-    expect(send).toHaveBeenCalledWith(ALERT_MESSAGES.fallback);
+    expect(send).toHaveBeenCalledWith(ALERT_MESSAGES.fallback());
   });
 
   it('cai na mensagem de fallback para kind desconhecido', async () => {
@@ -49,7 +59,41 @@ describe('createAlertDispatcher', () => {
 
     await dispatch({ kind: 'qualquer-coisa' });
 
-    expect(send).toHaveBeenCalledWith(ALERT_MESSAGES.fallback);
+    expect(send).toHaveBeenCalledWith(ALERT_MESSAGES.fallback());
+  });
+
+  it('não envia vaga de mês fora do interesse e não consome o cooldown', async () => {
+    const { dispatch, send } = setup({ interestedMonths: ['Outubro / 2026'] });
+
+    const foraDoInteresse = await dispatch({ kind: 'available', months: ['Setembro / 2026'] });
+    expect(foraDoInteresse).toEqual({ sent: false, reason: 'not-interested' });
+    expect(send).not.toHaveBeenCalled();
+
+    // Cooldown intacto: uma vaga do mês de interesse logo em seguida é enviada.
+    const doInteresse = await dispatch({ kind: 'available', months: ['Outubro / 2026'] });
+    expect(doInteresse.sent).toBe(true);
+    expect(send).toHaveBeenCalledOnce();
+    expect(send).toHaveBeenCalledWith(ALERT_MESSAGES.available(['Outubro / 2026']));
+  });
+
+  it('interestedMonths pode ser uma função, resolvida a cada alerta', async () => {
+    let meses = ['Outubro / 2026'];
+    const { dispatch, send, advance } = setup({ interestedMonths: () => meses });
+
+    expect((await dispatch({ kind: 'available', months: ['Setembro / 2026'] })).sent).toBe(false);
+
+    meses = ['Setembro / 2026'];
+    advance(1);
+    expect((await dispatch({ kind: 'available', months: ['Setembro / 2026'] })).sent).toBe(true);
+    expect(send).toHaveBeenCalledOnce();
+  });
+
+  it('sem meses de interesse, alerta qualquer mês', async () => {
+    const { dispatch, send } = setup();
+
+    await dispatch({ kind: 'available', months: ['Dezembro / 2026'] });
+
+    expect(send).toHaveBeenCalledWith(ALERT_MESSAGES.available(['Dezembro / 2026']));
   });
 
   it('suprime um segundo alerta dentro da janela de silêncio', async () => {

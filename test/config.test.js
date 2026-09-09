@@ -1,5 +1,13 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { normalizeNumber, numberFromEnv, whatsAppRecipients } from '../src/config.js';
+import {
+  canonicalMonthLabel,
+  monthLabel,
+  normalizeMonthLabel,
+  normalizeNumber,
+  numberFromEnv,
+  upcomingMonthLabels,
+  whatsAppRecipients,
+} from '../src/config.js';
 
 afterEach(() => {
   vi.unstubAllEnvs();
@@ -77,5 +85,61 @@ describe('whatsAppRecipients', () => {
   it('propaga a falha de validação de um número inválido na lista', () => {
     vi.stubEnv('WHATSAPP_RECIPIENTS', '["123"]');
     expect(() => whatsAppRecipients()).toThrow(/array JSON/);
+  });
+});
+
+describe('monthLabel', () => {
+  it('formata como o portal ("Mês / AAAA"), índice base 0', () => {
+    expect(monthLabel(2026, 8)).toBe('Setembro / 2026');
+  });
+
+  it('normaliza índice fora de 0–11', () => {
+    expect(monthLabel(2027, 12)).toBe('Janeiro / 2027');
+    expect(monthLabel(2026, -1)).toBe('Dezembro / 2026');
+  });
+});
+
+describe('upcomingMonthLabels', () => {
+  it('vai do mês atual até 3 à frente (4 rótulos)', () => {
+    const now = new Date(2026, 8, 9); // 2026-09-09
+    expect(upcomingMonthLabels(3, now)).toEqual([
+      'Setembro / 2026',
+      'Outubro / 2026',
+      'Novembro / 2026',
+      'Dezembro / 2026',
+    ]);
+  });
+
+  it('cruza a virada de ano', () => {
+    const now = new Date(2026, 10, 15); // Novembro/2026
+    expect(upcomingMonthLabels(3, now)).toEqual([
+      'Novembro / 2026',
+      'Dezembro / 2026',
+      'Janeiro / 2027',
+      'Fevereiro / 2027',
+    ]);
+  });
+});
+
+describe('normalizeMonthLabel', () => {
+  it('remove acento, caixa e espaços extras', () => {
+    expect(normalizeMonthLabel('  MARÇO  /  2026 ')).toBe('marco / 2026');
+  });
+
+  it('deixa rótulos equivalentes iguais', () => {
+    expect(normalizeMonthLabel('Setembro / 2026')).toBe(normalizeMonthLabel('SETEMBRO / 2026'));
+  });
+});
+
+describe('canonicalMonthLabel', () => {
+  it('normaliza a forma que o portal mostra', () => {
+    expect(canonicalMonthLabel('SETEMBRO / 2026')).toBe('Setembro / 2026');
+    expect(canonicalMonthLabel('setembro/2026')).toBe('Setembro / 2026');
+    expect(canonicalMonthLabel('Março / 2027')).toBe('Março / 2027');
+  });
+
+  it('retorna null quando não casa com "<mês> / <ano>"', () => {
+    expect(canonicalMonthLabel('Nenhum mês aberto')).toBeNull();
+    expect(canonicalMonthLabel('Xxxxx / 2026')).toBeNull();
   });
 });

@@ -30,18 +30,18 @@ lê `process.env`.
 | --- | --- |
 | `src/cli.js` | **Entrypoint principal.** Menu interativo (`@inquirer/prompts`); roteia escolha de menu → chamada de serviço. |
 | `src/whatsapp-test.js` | **Entrypoint.** Script de fumaça: `sendTestMessage()`. |
-| `src/config.js` | **base.** Toda leitura de `process.env` + constantes ajustáveis (`PORTAL_URL`, `MONITOR_INTERVAL_MS`, `BROWSER_RESTART_MS`, paths do perfil WhatsApp), `portalCredentials()`, `normalizeNumber`, `whatsAppRecipients`. Não carrega `.env`. |
+| `src/config.js` | **base.** Toda leitura de `process.env` + constantes ajustáveis (`PORTAL_URL`, `MONITOR_INTERVAL_MS`, `BROWSER_RESTART_MS`, paths do perfil WhatsApp), `portalCredentials()`, `normalizeNumber`, `whatsAppRecipients`, helpers de mês (`upcomingMonthLabels`, `normalizeMonthLabel`, `canonicalMonthLabel`). Não carrega `.env`. |
 | `src/logger.js` | **base.** `timestamp()` e `report(status, details)`. |
-| `src/adapters/portal.js` | Driver do portal: tudo acoplado ao HTML/seletores (`login`, `openNewStay`, `checkAvailability`, iframes). Muda quando o portal muda. |
+| `src/adapters/portal.js` | Driver do portal: tudo acoplado ao HTML/seletores (`login`, `openNewStay`, `checkAvailability` — clica mês a mês e lê `Disponíveis (N)`, iframes). Núcleo puro exportado: `classifyAvailability`, `parsePeriodCount`. Muda quando o portal muda. |
 | `src/adapters/whatsapp-client.js` | Adapter whatsapp-web.js: `withWhatsApp` (connect→ação→destroy), `connectWhatsApp`, `waitForServerAck`, `whatsAppSessionExists`, `clearWhatsAppSessionFiles`. Sem noção de destinatário/alerta. |
 | `src/adapters/browser-profile.js` | `sanitizeBrowserProfile()` / `closeStrayPages()`: zera abas/locks do perfil Chromium (mata Chromium órfão pelo `SingletonLock`). |
 | `src/services/monitor.js` | `runMonitor({ once, signal, report, onAlert })` — só o **loop**: lifecycle do Chromium, retries, despacho de `onAlert`. Executável direto (`node src/services/monitor.js [--once]`). |
-| `src/services/notifier.js` | `createAlertDispatcher()` (rate-limit **1 alerta / 10 min**), `sendWhatsAppAlert()`, `sendTestMessage()`, `ALERT_MESSAGES`, `TEST_MESSAGE`. `now`/`send` injetáveis. |
+| `src/services/notifier.js` | `createAlertDispatcher()` (rate-limit **1 alerta / 10 min** + filtro `interestedMonths`), `sendWhatsAppAlert()`, `sendTestMessage()`, `ALERT_MESSAGES` (funções: `available(months)` nomeia o mês + link), `alertMessage()`, `TEST_MESSAGE`. `now`/`send` injetáveis. |
 | `src/services/whatsapp-session.js` | `validateSession()` / `logout()` — casos de uso do menu "Gerenciar notificações". |
 | `.env` / `.env.example` | Credenciais e configuração. O `.env` real é ignorado pelo Git. |
 | `.wwebjs_auth/`, `.wwebjs_cache/` | Sessão persistida do WhatsApp Web. Não versionar. |
 | `docs/` | Documentação de arquitetura e configuração. |
-| `test/` | Testes unitários (Vitest). Cobrem `config.js`, `logger.js`, `adapters/portal.js` (`checkAvailability`), `adapters/whatsapp-client.js` (`waitForServerAck`), `services/monitor.js` (`sleep`) e `services/notifier.js` (`createAlertDispatcher`). Não sobem navegador nem rede. |
+| `test/` | Testes unitários (Vitest). Cobrem `config.js` (inclui helpers de mês), `logger.js`, `adapters/portal.js` (`classifyAvailability`, `parsePeriodCount`), `adapters/whatsapp-client.js` (`waitForServerAck`), `services/monitor.js` (`sleep`) e `services/notifier.js` (`createAlertDispatcher`). Não sobem navegador nem rede. |
 
 ## Comandos
 
@@ -62,10 +62,11 @@ npm run test:watch     # Vitest em modo watch
 
 - **Mensagens e logs em português**, em CAIXA ALTA para o status (`report(status, details)`).
   Timestamps no fuso `America/Sao_Paulo`, formato ISO-like (`sv-SE`).
-- **Nunca classificar uma vaga como disponível por suposição.** O código só reconhece a
-  ausência de vaga (texto `Nenhum mês aberto`). Qualquer outra resposta vira
-  `FALLBACK: ...` justamente para não gerar falso positivo. Preserve essa postura
-  conservadora ao evoluir `checkAvailability`.
+- **Nunca classificar uma vaga como disponível por suposição.** Há vaga (`'available'`)
+  só quando um mês listado abre o passo "Períodos" com `Disponíveis (N ≥ 1)`. `Disponíveis (0)`
+  → `'sem-periodo'` (só log); ausência total (`Nenhum mês aberto`) → `'unavailable'`;
+  contagem ilegível ou tela desconhecida → `'unknown'` + `FALLBACK: ...`. Preserve essa
+  postura conservadora ao evoluir `checkAvailability` / `classifyAvailability`.
 - O portal usa **iframes** e demora a liberar o formulário; o código varre `page.frames()`
   com deadlines generosos (até 90s no login). Mantenha esse padrão de espera.
 - Erros de sessão expirada começam com o prefixo `SESSÃO EXPIRADA:` e quebram o loop
@@ -85,10 +86,13 @@ npm run test:watch     # Vitest em modo watch
 ## Estado atual / lacunas conhecidas
 
 Veja `KNOWN_ISSUES.md`. Monitor e WhatsApp **estão integrados**: `runMonitor` chama
-`onAlert` em vaga (`kind: 'available'`) e em resposta inesperada (`kind: 'fallback'`), e
-o despachante de `alerts.js` envia por WhatsApp respeitando o limite de 1 a cada 10 min.
-Hoje só o caminho `'fallback'` dispara de fato — **`checkAvailability` ainda não tem
-regra positiva de vaga** e nunca retorna `'available'`.
+`onAlert({ kind: 'available', months })` quando um mês tem `Disponíveis (N ≥ 1)` e
+`onAlert({ kind: 'fallback' })` em resposta inesperada; o despachante de `notifier.js`
+envia por WhatsApp (limite de 1 a cada 10 min) e **filtra pelo mês de interesse**
+escolhido no menu (`checkbox` do mês atual até +3). `'sem-periodo'` (mês listado,
+`Disponíveis (0)`) só loga `MÊS SEM PERÍODO`, não alerta. Ainda **não** foi possível
+observar o portal com uma vaga real (`N ≥ 1`) — a leitura de `parsePeriodCount` é
+hipótese e pode precisar de ajuste.
 
 ## Segredos
 
